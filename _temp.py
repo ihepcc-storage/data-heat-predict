@@ -447,12 +447,12 @@ def ScanHbaseTimeSeris(TimeBegin=0.0, TimeEnd=0.0, row_start=None, PredictTimeOf
                         CsvFeatureFile04.flush()
                     ct04 += 1
                     allct04 += 1
-            
+
             try:
                 filenamecsv.writerow(filenameHash)
             except:
                 FilenameDatasetfile, filenamecsv = OpenCsvFile(FilenameDataset)
-                filenamecsv.writerow(filenameHash)
+                filenamecsv.writerow([filenameHash])
             #print SingleFeatureList
             # ct += 1
             # csv.writerow(SingleFeatureList)
