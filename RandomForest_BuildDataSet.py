@@ -15,6 +15,7 @@ def statistics(TimeBegin=0.0, TimeEnd=0.0, csv_Batchwriter=None, csv_Userwriter=
     rowEnd = str(TimeEnd)+'99999'+'f'*32
     LoginNodeFile = 0
     ComputeNodeFile = 0
+    DuplicateFeature = 0
     feature_set = set()
     for key, data in OtsUidPathTable.scan(row_start=rowStart, row_stop=rowEnd, reverse=True):
         if limit!= None:
@@ -115,6 +116,9 @@ def statistics(TimeBegin=0.0, TimeEnd=0.0, csv_Batchwriter=None, csv_Userwriter=
                     csv_Batchwriter.writerow(r_list)
                 else:
                     csv_Userwriter.writerow(r_list)
+            else:
+                DuplicateFeature += 1
+                print 'DuplicateFeature:', DuplicateFeature
     return key
 
     pass

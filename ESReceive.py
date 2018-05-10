@@ -109,9 +109,9 @@ class ReceiveAPI(object):
         try:
             jsonObj = json.loads(InputStr)
             return jsonObj
-        except Exception as e:
-            self.logger.error(e)
-            print e
+        except:
+            #self.logger.error(e)
+            #print e
             traceback.print_exc()
             return -1
         pass
@@ -325,7 +325,7 @@ class ReceiveAPI(object):
         return self.CacheHit
 
 
-RA = ReceiveAPI(200,1524193200000, 1)
+RA = ReceiveAPI(200,1525917600000, 1)
 
 def main():
     while True:

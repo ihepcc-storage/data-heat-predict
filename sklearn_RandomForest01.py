@@ -222,7 +222,7 @@ class RandomForest(RandomForestClassifier):
         #print "AUC Score (Train): %f" % metrics.roc_auc_score(self.y_test, y_predprob)
 
 def main():
-    rf = RandomForest(n_estimators=10, max_features=1.0)
+    rf = RandomForest(n_estimators=100, max_features=1.0)
     rf.read_csv("csv/feature_batch.csv", "csv/feature_user.csv", "csv/test_batch.csv", "csv/test_user.csv",
                 Shuffle=True)
     rf.BuildEncoder(rf.train_data)

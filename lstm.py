@@ -2,6 +2,7 @@
 import sys, os
 import tensorflow as tf
 import numpy as np
+import pandas as pd
 import BuildDataSet01
 
 
@@ -17,15 +18,31 @@ n_classes = 4         #输出节点数（分类数目）
 
 #LossSess = tf.Session()
 # data
-"""
-DataSets = BuildDataSet.read_data_sets(train_time_end=9999999999.99-1520611200.00, train_time_begin=9999999999.99-1521043200.00,
-                   test_time_end=9999999999.99-1521129600.00, test_time_begin=9999999999.99-1521475200.00)
-train = DataSets[0]
-validation = DataSets[1]
-test = DataSets[2]
-test_x = test.features
-test_y = test.labels
-"""
+def read_csv(csv=None, shuffle=True):
+    data = pd.read_csv(csv, dtype='float', header=None)
+
+    if data.isnull().values.any():
+        print 'NaN value exist in dataframe data:', np.nonzero(data.isnull().any(1))[0].tolist()
+        #print data[data.isnull().any(1)]
+        # a = np.nonzero(data.isnull().any(1))[0].tolist()
+        data = data.dropna()
+        print np.nonzero(data.isnull().any(1))[0].tolist()
+        #data = data.drop(a, axis=0)
+
+    #feature = data['ots, cts, osize, csize, rb, rb_min, rb_max, rb_sigma, wb, wb_min, wb_max, wb_sigma, rt, wt, nrc, nwc, nfwds, nbwds, sfwdb, sbwdb, nxlfwds, nxlbwds, sxlfwdb, sxlbwdb'.split(',')]
+    feature = data.values[:,:-4]
+    print feature.shape
+
+    #label = data[' read, read-write, write, NoAccess'.split(',')]
+    label = data.values[:,-4:]
+    print label.shape
+
+    return (feature, label)
+
+    pass
+
+(TestFeature, TestLabel) = read_csv(csv='csv/LSTM_TEST_DATASET.csv')
+
 
 # tensor placeholder
 with tf.name_scope('inputs'):
@@ -114,11 +131,11 @@ with tf.name_scope('train'):
 # correct_pred = tf.equal(tf.arg_max(pred, 1), tf.arg_max(y, 1))
 # accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
 with tf.name_scope('accuracy'):
-    #accuracy = tf.metrics.accuracy(labels=tf.arg_max(y, 1), predictions=tf.arg_max(pred,1))[1]
-    #tf.summary.scalar('accuracy', accuracy)
+    accuracy = tf.metrics.accuracy(labels=tf.arg_max(y, 1), predictions=tf.arg_max(pred,1))[1]
+    tf.summary.scalar('accuracy', accuracy)
 
-    correct_prediction = tf.equal(tf.arg_max(pred,1),tf.argmax(y,1))
-    accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
+    #correct_prediction = tf.equal(tf.arg_max(pred,1),tf.argmax(y,1))
+    #accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
 
 
 
@@ -128,20 +145,21 @@ with tf.name_scope('accuracy'):
 
 with tf.Session() as sess:
     merged = tf.summary.merge_all()
-
-
     features = np.empty(shape=[0, 2400])
     labels = np.empty(shape=[0, 4])
     #
-    dataset = BuildDataSet01.DataSet(features=features, labels=labels, train_time_begin=9999999999.99 - 1521993600.00,
-                      train_time_end=9999999999.99 - 1521475200.00, PredictTimeOffset=86400.00,
+    dataset = BuildDataSet01.DataSet(features=features, labels=labels, train_time_begin=9999999999.99 - 1525017600.00,
+                      train_time_end=9999999999.99 - 1522512000.00, PredictTimeOffset=86400.00,
                       PredictTimeWindow=86400.00*7, n_steps=100,
                       capacity=10000, limit=1000)
 
-    sess.run(tf.global_variables_initializer())
-    sess.run(tf.local_variables_initializer())
+    (TestFeature, TestLabel) = read_csv(csv='csv/LSTM_TEST_DATASET.csv')
+
     train_writer = tf.summary.FileWriter("./logs/train", sess.graph)
     test_writer = tf.summary.FileWriter("./logs/test", sess.graph)
+
+    sess.run(tf.global_variables_initializer())
+    sess.run(tf.local_variables_initializer())
 
     # training
     i = 0
@@ -149,28 +167,25 @@ with tf.Session() as sess:
         i += 1
         _batch_size = 100
         batch_x, batch_y = dataset.next_batch_series(batch_size=_batch_size)
+        #print batch_x
+        #print batch_y
+        #break
         #print 'a new batch'
         if batch_x==np.array([-1]):
             break
-
-        if (i+1) % 1==0:
-            #test_x, test_y = dataset.next_batch_series(batch_size=16)
-            test_x, test_y = batch_x, batch_y
-            train_accuracy = sess.run(accuracy, feed_dict={x: test_x, y: test_y, keep_prob: 1.0,
-                                                                     batch_size: test_x.shape[0]})
-            print "Testing Accuracy:", train_accuracy
-            #print 'iter:',i,'loss:',cost
-            #train_result = sess.run(merged, feed_dict={x:batch_x, y:batch_y, keep_prob:1.0, batch_size:_batch_size})
-            #test_result = sess.run(merged, feed_dict={x:test_x, y:test_y, keep_prob:1.0, batch_size:test_x.shape[0]})
-            #train_writer.add_summary(train_result, i+1)
-            #test_writer.add_summary(test_result, i+1)
 
         _, loss_ = sess.run([train_op, cost],
                             feed_dict={x: batch_x, y: batch_y, keep_prob: 0.5, batch_size: _batch_size})
         print 'iter:', i, 'loss:', loss_
 
-        rs = sess.run(merged)
-        train_writer.add_summary(rs, i)
+        if (i+1) % 1==0:
+            # test_x, test_y = dataset.next_batch_series(batch_size=16)
+            #test_x, test_y = batch_x, batch_y
+            rs, train_accuracy = sess.run([merged,accuracy], feed_dict={x: TestFeature, y: TestLabel, keep_prob: 1.0,
+                                                                     batch_size: TestFeature.shape[0]})
+            print "Testing Accuracy:", train_accuracy
+            train_writer.add_summary(rs, i)
+
 
     print "Optimization Finished!"
 
