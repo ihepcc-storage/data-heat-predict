@@ -5,7 +5,8 @@ from tensorflow.python.framework import dtypes
 import numpy as np
 import random
 import pandas as pd
-import zipfile
+from pandas import Series, DataFrame
+from scipy import sparse
 from sklearn.utils import resample
 from sklearn.utils import shuffle
 
@@ -82,7 +83,7 @@ class DataSet(object):
             return self._features[start:end], self.labels[start:end]
         pass
 
-
+"""
 # read DataSet
 def read_zip_csv(zip_csv_list=None):
     DataframeList = []
@@ -107,7 +108,51 @@ def read_zip_csv(zip_csv_list=None):
         z_csv.close()
     return pd.concat(DataframeList, axis=0)
     pass
+"""
 
+# read Dataset
+def read_sparse_matrix(sparse_matrix_list=None, bootstrap=False, SampleCount=-1):
+    if not bootstrap:
+        SampleCount = -1
+    DataframeList = []
+    for _sparse_matrix_list in sparse_matrix_list:
+        feature_matrix = None
+        _matrix = None
+        ct=0
+        for sparse_matrix in _sparse_matrix_list:
+            print 'Read ', sparse_matrix
+            ct += 1
+            try:
+                matrix = sparse.load_npz(sparse_matrix)
+            except:
+                print 'Open', sparse_matrix, 'error!'
+                continue
+            try:
+                _matrix = sparse.vstack((_matrix,matrix))
+            except:
+                _matrix = matrix
+            if ct%100==0:
+                try:
+                    feature_matrix = sparse.vstack((feature_matrix, _matrix))
+                    _matrix = None
+                except:
+                    feature_matrix = _matrix
+        try:
+            if _matrix!=None:
+                feature_matrix = sparse.vstack((feature_matrix, _matrix))
+                _matrix = None
+        except:
+            feature_matrix = _matrix
+        if feature_matrix==None:
+            continue
+        feature_matrix = resample(feature_matrix,replace=True,n_samples=SampleCount,random_state=1)
+        df = DataFrame(feature_matrix.toarray())
+        DataframeList.append(df)
+    return DataframeList
+    return pd.concat(DataframeList, axis=0)
+    pass
+
+"""
 def build_zip_csv_list(zip_csv_class01_prefix,zip_csv_class01_begin_index, zip_csv_class01_end_index,
                        zip_csv_class02_prefix, zip_csv_class02_begin_index, zip_csv_class02_end_index,
                        zip_csv_class03_prefix, zip_csv_class03_begin_index, zip_csv_class03_end_index):
@@ -123,11 +168,35 @@ def build_zip_csv_list(zip_csv_class01_prefix,zip_csv_class01_begin_index, zip_c
         _list3.append(zip_csv_class03_prefix+str(i))
     zip_csv_list.append(_list3)
     return zip_csv_list
+"""
+def build_sparse_matrix_list(sparse_matrix_class01_format,sparse_matrix_class01_begin_index,sparse_matrix_class01_end_index,
+                             sparse_matrix_class02_format, sparse_matrix_class02_begin_index,
+                             sparse_matrix_class02_end_index,sparse_matrix_class03_format,
+                             sparse_matrix_class03_begin_index,sparse_matrix_class03_end_index,
+                             sparse_matrix_class04_format, sparse_matrix_class04_begin_index,
+                             sparse_matrix_class04_end_index):
+    sparse_matrix_list = []
+    _list1, _list2, _list3, _list4 = [], [], [], []
+    for i in range(sparse_matrix_class01_begin_index, sparse_matrix_class01_end_index+1):
+        _list1.append(sparse_matrix_class01_format.replace('*', str(i), 1))
+    sparse_matrix_list.append(_list1)
+    for i in range(sparse_matrix_class02_begin_index, sparse_matrix_class02_end_index+1):
+        _list2.append(sparse_matrix_class02_format.replace('*', str(i), 1))
+    sparse_matrix_list.append(_list2)
+    for i in range(sparse_matrix_class03_begin_index, sparse_matrix_class03_end_index+1):
+        _list3.append(sparse_matrix_class03_format.replace('*', str(i), 1))
+    sparse_matrix_list.append(_list3)
+    for i in range(sparse_matrix_class04_begin_index, sparse_matrix_class04_end_index+1):
+        _list4.append(sparse_matrix_class04_format.replace('*', str(i), 1))
+    sparse_matrix_list.append(_list4)
+    return sparse_matrix_list
 
+"""
 zip_csv_list = build_zip_csv_list('/scratchfs/cc/chengzj/csv/LSTM_TRAIN_DATASET_class01.csv.zip.',0,1,
                                   '/scratchfs/cc/chengzj/csv/LSTM_TRAIN_DATASET_class02.csv.zip.',0,0,
                                   '/scratchfs/cc/chengzj/csv/LSTM_TRAIN_DATASET_class03.csv.zip.',0,170)
 print zip_csv_list
+
 TrainDataList = []
 Sum_Len = 0
 Max_Index = -1
@@ -144,28 +213,23 @@ for i in zip_csv_list:
 TrainData = pd.concat(TrainDataList, axis=0)
 TrainFeature = TrainData.values[:,:-3]
 TrainLabel = TrainData.values[:,-3:]
+"""
 
-#print 'TrainFeature.shape:', TrainFeature.shape, 'TrainLable.shape:', TrainLabel.shape
-for i in range(0,len(TrainDataList)):
-    #if i==Max_Index:
-        #print i, 'no need'
-        #continue
-    TrainDataList[i] = resample(TrainDataList[i], replace=True, n_samples=Sum_Len/3, random_state=123)
-    #print TrainDataList[i].values[:,-3:]
-
+sparse_matrix_list = build_sparse_matrix_list('./csv01/LSTM_TRAIN_DATASET_class01.*.npz',1,1794,
+                                              './csv01/LSTM_TRAIN_DATASET_class02.*.npz',1,1,
+                                              './csv01/LSTM_TRAIN_DATASET_class03.*.npz',1,0,
+                                              './csv01/LSTM_TRAIN_DATASET_class04.*.npz',1,2)
+TrainDataList = read_sparse_matrix(sparse_matrix_list,bootstrap=True,SampleCount=100000)
 TrainData = pd.concat(TrainDataList, axis=0)
-TrainFeature = TrainData.values[:,:-3]
-TrainLabel = TrainData.values[:,-3:]
+
+TrainFeature = TrainData.values[:,0:4320]
+TrainLabel = TrainData.values[:,4321:-2]
 
 print 'After Bootstrapping TrainFeature.shape:', TrainFeature.shape, 'TrainLable.shape:', TrainLabel.shape
-
-
-
 TrainDataset = DataSet(features=TrainFeature, labels=TrainLabel)
 
 
-#zip_csv_list = ['csv/LSTM_TRAIN_DATASET_class01.csv.zip.0','csv/LSTM_TRAIN_DATASET_class02.csv.zip.2',
-                #'csv/LSTM_TRAIN_DATASET_class03.csv.zip.2']
+"""
 zip_csv_list = build_zip_csv_list('/scratchfs/cc/chengzj/csv01/LSTM_TRAIN_DATASET_class01.csv.zip.',0,6,
                                   '/scratchfs/cc/chengzj/csv01/LSTM_TRAIN_DATASET_class02.csv.zip.',0,1,
                                   '/scratchfs/cc/chengzj/csv01/LSTM_TRAIN_DATASET_class03.csv.zip.',0,113)
@@ -207,7 +271,7 @@ TestLabel = TestData.values[:,-3:]
 
 print 'After Bootstrapping TestFeature.shape:', TestFeature.shape, 'TestLable.shape:', TestLabel.shape
 TestDataset = DataSet(features=TestFeature, labels=TestLabel)
-
+"""
 
 
 
@@ -220,11 +284,11 @@ learning_rate = starter_learning_rate
 train_batch_size = 256
 test_batch_size = 1000
 
-n_steps = 24*7            #LSTM 展开步数
-n_inputs = 7           #输入节点数
+n_steps = 24*30            #LSTM 展开步数
+n_inputs = 6           #输入节点数
 n_hiddens = 256         #隐层节点数
-n_layers = 2          #LSTM layer层数
-n_classes = 3         #输出节点数（分类数目）
+n_layers = 3          #LSTM layer层数
+n_classes = 4         #输出节点数（分类数目）
 
 """
 with tf.name_scope('learning_rate'):
@@ -334,14 +398,17 @@ with tf.name_scope('accuracy_class1'):
 with tf.name_scope('accuracy_class2'):
     accuracy_class2 = tf.metrics.accuracy(labels=tf.arg_max(y, 1), predictions=tf.arg_max(pred, 1))[1]
     accuracy_class2_scalar = tf.summary.scalar('accuracy_class2', accuracy_class2)
+with tf.name_scope('accuracy_class3'):
+    accuracy_class3 = tf.metrics.accuracy(labels=tf.arg_max(y, 1), predictions=tf.arg_max(pred, 1))[1]
+    accuracy_class3_scalar = tf.summary.scalar('accuracy_class3', accuracy_class3)
 
 
 saver = tf.train.Saver()
 
 with tf.Session() as sess:
     #merged = tf.summary.merge_all()
-    features = np.empty(shape=[0, 1176])
-    labels = np.empty(shape=[0, 3])
+    #features = np.empty(shape=[0, 1176])
+    #labels = np.empty(shape=[0, 3])
 
     train_writer = tf.summary.FileWriter("./logs/train", sess.graph)
     test_writer = tf.summary.FileWriter("./logs/test", sess.graph)
@@ -358,30 +425,25 @@ with tf.Session() as sess:
     """
 
     # training
-    #i = 114.1 *1000
-    #TrainDataset._epochs_completed = 33
     i = 0
     last_train_accuracy = 0
-
     batch_x, batch_y = None, None
     batch_x, batch_y = TrainDataset.next_batch(batch_size=train_batch_size, shuffle=True)
     while True:
         i += 1
-        #print batch_x
-        #print batch_y
-        #print 'a new batch'
-        #if batch_x==np.array([-1]):
-            #break
 
         _, loss_ = sess.run([train_op, loss_scalar],
                             feed_dict={x: batch_x, y: batch_y, keep_prob: 0.5, batch_size: batch_x.shape[0]})
         train_writer.add_summary(loss_, i)
 
         batch_x, batch_y = TrainDataset.next_batch(batch_size=train_batch_size, shuffle=True)
-        train_accuracy = sess.run(accuracy, feed_dict={x: batch_x, y: batch_y, keep_prob: 1.0,
-                                                         batch_size: batch_x.shape[0]})
-        print 'iter:', i, '_epochs_completed:', TrainDataset._epochs_completed,  \
-            "Train Accuracy(use next batch):", train_accuracy
+        print 'iter:', i, '_epochs_completed:', TrainDataset._epochs_completed
+
+        if (i+1) % 10==0:
+            train_accuracy = sess.run(accuracy, feed_dict={x: batch_x, y: batch_y, keep_prob: 1.0,
+                                                             batch_size: batch_x.shape[0]})
+            print "Train Accuracy(use next batch):", train_accuracy
+
 
         if (i+1) % 10==0:
             if train_accuracy<last_train_accuracy:
@@ -392,6 +454,7 @@ with tf.Session() as sess:
             last_train_accuracy = train_accuracy
             print 'learning_rate:', learning_rate
 
+
         if (i+1) % 1000==0:
             batch_x, batch_y = TrainDataset.random_sample_batch(batch_size=test_batch_size)
             train_accuracy_metall = sess.run(accuracy_scalar, feed_dict={x: batch_x, y: batch_y, keep_prob:1.0,
@@ -399,6 +462,7 @@ with tf.Session() as sess:
             #print "Train Accuracy(use train dataset sample):", train_accuracy
             train_writer.add_summary(train_accuracy_metall, i)
 
+        '''
         if (i+1) % 1000==0:
             """
             learning_rate_metall = sess.run(learning_rate_scalar)
@@ -436,6 +500,7 @@ with tf.Session() as sess:
                     print 'class 2 accuracy:', sess.run(accuracy_class2, feed_dict={x:_test_batch_x, y:_test_batch_y, keep_prob:1.0, batch_size:_test_batch_x.shape[0]})
                     test_writer.add_summary(_test2_accuracy_metall, i)
                     #print "Testing class", item, "Accuracy:", sess.run(accuracy_class2)
+        '''
 
 
         if (i+1) % 1000 ==0:
