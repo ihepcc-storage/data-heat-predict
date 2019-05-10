@@ -1,0 +1,1060 @@
+# -*-coding:UTF-8-*-
+import sys, os
+import tensorflow as tf
+tf.device('/gpu:0')
+#os.environ['CUDA_VISIBLE_DEVICES']='0'
+from tensorflow.python.framework import dtypes
+import numpy as np
+np.set_printoptions(threshold=np.inf)
+import random
+import pandas as pd
+from pandas import Series, DataFrame
+from scipy import sparse
+from sklearn.utils import resample
+from sklearn.utils import shuffle
+import time
+
+from sklearn.preprocessing import scale
+
+
+
+
+class DataSet(object):
+
+    def __init__(self,sparse_matrix=None,class_num=1,class_edge=[],one_hot=False,zoom=False,MaxValue=0,dtype=dtypes.float32):
+        dtype = dtypes.as_dtype(dtype).base_dtype
+        if dtype not in (dtypes.uint8, dtypes.float32):
+            raise TypeError('Invalid image dtype %r, excepted uint8 or float32' % dtype)
+
+        self.init_sparse_matrix = sparse_matrix
+        if self.init_sparse_matrix!=None:
+            self.matrix_length = self.init_sparse_matrix.shape[0]
+        else:
+            self.matrix_length = 0
+        self.class_num = class_num
+        self.class_edge = class_edge
+        self.sparse_matrix_list = [self.init_sparse_matrix]
+        self._epochs_completed = 0
+        self._index_in_epoch = 0
+        pass
+
+    def one_hot_encode(self, index=0):
+        result = []
+        for i in range(0, self.class_num):
+            if index==i:
+                result.append(1)
+            else:
+                result.append(0)
+        return result
+
+
+    def add_sparse_matrix(self, sparse_matrix=None):
+        self.matrix_length += sparse_matrix.shape[0]
+        self.sparse_matrix_list[0] = sparse.vstack((self.sparse_matrix_list[0],sparse_matrix))
+        pass
+
+
+    def random_sample_batch_mix(self, batch_size):
+        sparse_matrix_batch = None
+        read_time_matrix, write_time_matrix = None, None
+        AVG_read_matrix, AVG_write_matrix = None, None
+        index = 0
+        sub_matrix = self.sparse_matrix_list[0]
+        _replace = False
+        if sub_matrix.shape[0]==0:
+            continue
+        if sub_matrix.shape[0]<=batch_size/len(self.sparse_matrix_list):
+            _replace = True
+        sub_matrix_batch = resample(sub_matrix, replace=_replace, n_samples=batch_size/len(self.sparse_matrix_list))
+        sparse_matrix_batch = sparse.vstack((sparse_matrix_batch, sub_matrix_batch))   
+        if sparse_matrix_batch==None:
+            return None, -1
+        df = DataFrame(sparse_matrix_batch.toarray())
+        features = df.values[:,:]
+
+        self._index_in_epoch += batch_size
+        if self._index_in_epoch>self.matrix_length:
+            self._epochs_completed += 1
+            self._index_in_epoch = self._index_in_epoch-self.matrix_length
+        print "sub matrix batch shape:", features.shape
+        return features, 0
+        pass
+   
+ 
+    def random_sample_batch_separate(self, batch_size, index):
+        _replace = False
+        if self.sparse_matrix_list[index].shape[0]==0:
+            return None, -1
+        if self.sparse_matrix_list[index].shape[0]<=batch_size:
+            _replace = True
+
+        index = 0
+        sparse_matrix_batch = resample(self.sparse_matrix_list[index], replace=_replace, n_samples=batch_size, random_state=1)
+        df = DataFrame(sparse_matrix_batch.toarray())
+        features = df.values[:,:]
+        print "sub matrix batch shape:", features.shape
+        return features, 0
+        pass
+
+
+    def reOrder_matrix(self, IndexList=[]):
+        if len(IndexList)>self.sparse_matrix_list[0].shape[0]:
+            print "Index and Matrix not compatible"
+            return None
+
+        sub_matrix = self.sparse_matrix_list[0]
+        print sub_matrix[0]
+        print IndexList[0]
+        #for index in IndexList:
+        #    for i 
+
+        pass
+
+
+def cm_plot(y, yp):
+    from sklearn.metrics import confusion_matrix
+    cm = confusion_matrix(y, yp)
+    import matplotlib
+    matplotlib.use("agg")
+    import matplotlib.pyplot as plt
+    plt.matshow(cm, cmap=plt.cm.Greens)
+    plt.colorbar()
+    for x in range(len(cm)):
+        for y in range(len(cm)):
+            plt.annotate(cm[x, y], xy=[x, y], horizontalalignment='center', verticalalignment='center')
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    return plt
+
+def roc_curve_plot(test, predict_result):
+    from sklearn.metrics import roc_curve
+    from sklearn.metrics import auc
+    import matplotlib.pyplot as plt
+
+    plt.subplot(211)
+    #sys.exit(0)
+    #fpr1, tpr1, thresholds1 = roc_curve(test, predict_result, pos_label=1)
+    fpr1, tpr1, thresholds1 = roc_curve(test, predict_result)
+    print 'LSTM Auc socre:', auc(fpr1, tpr1)
+    plt.plot(fpr1, tpr1, linewidth=2, label='ROC of LSTM', color='red')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.ylim(0,1.05)
+    plt.xlim(0,1.05)
+    plt.legend(loc=4)
+    return plt
+
+
+
+# read Dataset
+class_num = 1
+class_edge = [0, sys.maxint]
+ds = DataSet(sparse_matrix=None, class_num=class_num, class_edge=class_edge)
+ds_validation = DataSet(sparse_matrix=None, class_num=class_num, class_edge=class_edge)
+def read_sparse_matrix(sparse_matrix_name_list=None,bootstrap=False, SampleCount=-1, validation_percent=0.2, ds=None, ds_validation=None):
+    if not bootstrap:
+        SampleCount = -1
+    for _sparse_matrix_name_list in sparse_matrix_name_list:
+        feature_matrix = None
+        _matrix = None
+
+        ct=0
+        for sparse_matrix_name in _sparse_matrix_name_list:
+            print 'Read ', sparse_matrix_name
+            ct += 1
+            try:
+                matrix = sparse.load_npz(sparse_matrix_name)
+                print "matrix dimension:", matrix.shape
+            except Exception as e:
+                print e
+                print 'Open', sparse_matrix_name, 'error!'
+                continue
+
+            try:
+                _matrix = sparse.vstack((_matrix,matrix))
+            except:
+                _matrix = matrix
+
+            if ct%1==0:
+                validation_size = int(_matrix.shape[0]*validation_percent)
+                try:
+                    if validation_percent>0.0 and validation_percent<1.0:
+                        ds.add_sparse_matrix(_matrix.tocsr()[:-1*validation_size,:])
+                        ds_validation.add_sparse_matrix(_matrix.tocsr()[-1*validation_size:,:])
+                    if validation_percent==0.0:
+                        ds.add_sparse_matrix(_matrix.tocsr()[:,:])
+                    if validation_percent==1.0:
+                        ds_validation.add_sparse_matrix(_matrix.tocsr()[:,:])
+                except Exception as e:
+                    print e
+                _matrix = None
+
+        if _matrix!=None:
+            validation_size = int(_matrix.shape[0] * validation_percent)
+            try:
+                if validation_percent>0.0 and validation_percent<1.0:
+                    ds.add_sparse_matrix(_matrix.tocsr()[:-1*validation_size,:])
+                    ds_validation.add_sparse_matrix(_matrix.tocsr()[-1*validation_size:,:])
+                if validation_percent==0.0:
+                    ds.add_sparse_matrix(_matrix.tocsr()[:,:])
+                if validation_percent==1.0:
+                    ds_validation.add_sparse_matrix(_matrix.tocsr()[:,:])
+            except Exception as e:
+                print e
+            _matrix = None
+
+        if feature_matrix==None:
+            continue
+    pass
+
+
+def build_sparse_matrix_list(name_list):
+    sparse_matrix_list = []
+    for name_format in name_list:
+        _list = []
+        for i in range(name_format[1], name_format[2]):
+            _list.append(name_format[0].replace('*', str(i), 1))
+        sparse_matrix_list.append(_list)
+    return sparse_matrix_list
+    
+
+sparse_matrix_list = build_sparse_matrix_list(
+                                              [
+                                              ('./csv05/LSTM_TRAIN_1538668800-1541260800_DATASET_class01.*.npz',1,100),
+                                              ('./csv05/LSTM_TRAIN_1538668800-1541260800_DATASET_class02.*.npz',1,100),
+                                              ('./csv05/LSTM_TRAIN_1538668800-1541260800_DATASET_class03.*.npz',1,100),
+                                              ('./csv05/LSTM_TRAIN_1538668800-1541260800_DATASET_class04.*.npz',1,100),
+                                              ]
+                                             )
+
+read_sparse_matrix(sparse_matrix_list, validation_percent=0.2, ds=ds, ds_validation=ds_validation)
+##read_sparse_matrix(sparse_matrix_validation_list, validation_percent=1.0, ds=ds, ds_validation=ds_validation)
+ds.reOrder_matrix[]
+
+IndexFilename = "/home/czj/FstLogProcess/LSTM_TRAIN_1539187200-1541779200_log.txt.-1"
+FilenameDict = {}
+import collections
+FilenameFeature = collections.OrderedDict()
+sum = 0
+
+filename_alpha = 0
+filename_alpha_old = 0
+filename_old = ""
+filename_number = 0
+filename_number_old = 0
+
+filedir_alpha = 0
+filedir_alpha_old = 0
+filedir_old = ""
+filedir_number = 0
+filedir_number_old = 0
+
+hot_file = []
+
+for t in range(0, 1):
+    #with open(IndexFilename+str(t), 'r') as f:
+    with open(IndexFilename, 'r') as f:
+        while True:
+            line = f.readline()
+            if not line:
+                break
+            #t_list = line[:-1].split(', ')
+            t_list = line.split(', ')
+            #print t_list
+            #print len(t_list)
+            #for i in range(1, len(t_list)):
+            #    t_list[i] = float(t_list[i])
+            fileIndex = t_list[0]
+            FilenameDict[t_list[0]] = t_list[1]
+            filename = t_list[1]
+            #print filename
+            filedir = "/".join(filename.split('/')[:-1])
+            """
+            filename_alpha = 0
+            filename_number = 0
+            for item in filename:
+                if item >= "0" and item <= "9":
+                    filename_number += 1
+                if (item >= "a" and item <= "z") or (item >= "A" and item <= "Z"):
+                    filename_alpha  += 1
+
+            filedir_alpha = 0
+            filedir_number = 0
+            for item in filedir:
+                if item >= "0" and item <= "9":
+                    filedir_number += 1
+                if (item >= "a" and item <= "z") or (item >= "A" and item <= "Z"):
+                    filedir_alpha  += 1
+
+            if (filename_alpha==filename_alpha_old and filename_number==filename_number_old) or (filedir_alpha==filedir_alpha_old and filedir_number==filedir_number_old) or (len(filedir)==len(filedir_old) and (filename.split('.')[-1]==filename_old.split(',')[-1])):
+                continue
+            else:
+                #print filename_alpha, filename_number, filename_alpha_old, filename_number_old
+                filename_alpha_old = filename_alpha
+                filename_number_old = filename_number
+                filename_old = filename
+                filedir_alpha_old = filedir_alpha
+                filedir_number_old = filedir_number
+                filedir_old = filedir
+            """
+
+            #a = t_list[0]
+            #print a
+            #print a.split(',')[0]
+            t_list.extend([int(t_list[0].split(',')[0])])
+            #print t_list
+            #print len(t_list)
+            FilenameFeature[t_list[0].split(',')[0]] = t_list[1:]
+            #print t_list[0].split(',')[0]
+            print t_list[0].split(',')[1]
+            print t_list[0].split(',')[3]
+            if int(t_list[0].split(',')[3].split(':')[-1])<=4:
+                break
+            if sum<200:
+                hot_file.append(t_list[0].split(',')[0])   
+                #print 'hotfile', t_list[-1]
+            sum += 1
+            #if sum>200:
+                #break
+            print len(FilenameFeature.values()[0])
+            #break
+print len(FilenameDict.keys())
+#print FilenameDict.keys()
+#sys.exit(-1)
+#
+#
+def Normalize(data):
+    m = np.mean(data)
+    mx = max(data)
+    mn = min(data)
+    if mx==mn:
+        return data
+    return [(float(i) - m) / (mx - mn) for i in data]
+    #return (data - m) / (mx - mn)
+
+validation_percent = 0.2
+validation_size = int(validation_percent*len(FilenameFeature.keys()))
+data_train = FilenameFeature.values()
+hot_data_validation = []
+cold_data_validation = []
+"""
+for i in range(0, len(hot_file)):
+    #print 'data_train:',FilenameFeature.values()[i][-1]
+    hot_data_validation.append(FilenameFeature.values()[i])
+    cold_data_validation.append(FilenameFeature.values()[-1*i-1])
+"""
+
+#"""
+print len(data_train)
+m_interval = int(len(FilenameFeature.values())/len(hot_file))
+data_train = []
+for i in range(0, len(FilenameFeature.values())):
+    if i % m_interval==0:
+        hot_data_validation.append(FilenameFeature.values()[i])
+        cold_data_validation.append(FilenameFeature.values()[i])
+        #del data_train[j-i]
+    else:
+        data_train.append(FilenameFeature.values()[i])
+print len(data_train)
+#sys.exit(-1)
+#"""
+
+print len(data_train)
+print len(hot_data_validation)
+
+#sys.exit(-1)
+
+data_train = zip(*data_train)
+print len(data_train)
+#sys.exit(-1)
+hot_data_validation = zip(*hot_data_validation)
+cold_data_validation = zip(*cold_data_validation)
+hot_data_list = []
+cold_data_list = []
+for i in range(0, len(hot_data_validation)):
+    hot_data_list.append(list(hot_data_validation[i]))
+hot_data_validation = hot_data_list
+
+for i in range(0, len(cold_data_validation)):
+    cold_data_list.append(list(cold_data_validation[i]))
+cold_data_validation = cold_data_list
+#sys.exit(-1)
+
+data_train_list = []
+for i in range(0, len(data_train)):
+    data_train_list.append(list(data_train[i]))
+data_train = data_train_list
+#data_train = list(data_train)
+#print type(data_train)
+del FilenameFeature
+del data_train_list
+
+y_mx = 0
+y_mn = 0
+y_m = 0
+avg_y_mx = 0
+avg_y_mn = 0
+avg_y_m = 0
+size_mx = 0
+size_mn = 0
+size_m = 0
+
+"""
+for index in range(0, len(data_train[10080])):
+    data_train[10080][index] = data_train[10080][index]/100
+for index in range(0, len(hot_data_validation[10080])):
+    hot_data_validation[10080][index] = hot_data_validation[10080][index]/100
+for index in range(0, len(cold_data_validation[10080])):
+    cold_data_validation[10080][index] = cold_data_validation[10080][index]/100
+"""
+
+for i in range(10083, -1, -1):
+    #print data_train[i]
+    #data_train[i] = Normalize(data_train[i])
+    m = np.mean(data_train[i])
+    mx = max(data_train[i])
+    mn = min(data_train[i])
+    #if mx==mn:
+        #continue
+    #"""
+    if i == 10082:
+        for index in range(0, len(data_train[i])):
+            #print data_train[10080][index], data_train[10082][index]
+            if index<len(hot_data_validation[10080]):
+                hot_data_validation[10080][index] = data_train[10080][index]
+            if index>=(len(data_train[10080])-len(cold_data_validation[10080])):
+                cold_data_validation[10080][index-(len(data_train[10080])-len(cold_data_validation[10080]))] = data_train[10080][index]
+            #if index % m_interval==2 and index/m_interval<len(hot_data_validation[1000]):
+            #    print index/m_interval, len(hot_data_validation[1000]), len(cold_data_validation[1000])
+            #    hot_data_validation[10080][index/m_interval] = data_train[10080][index]
+            #    cold_data_validation[10080][index/m_interval] = data_train[10080][index]
+            """
+            if data_train[10082][index] != 0:
+                data_train[10080][index] = data_train[10080][index]/data_train[10082][index]
+            else:
+                data_train[10080][index] = 1.0
+       
+            if index<len(hot_data_validation[10080]):
+                hot_data_validation[10080][index] = data_train[10080][index]
+            if index>=len(data_train[10080])-len(cold_data_validation[10080]):
+                cold_data_validation[10080][index-(len(data_train[10080])-len(cold_data_validation[10080]))] = data_train[10080][index]
+            """
+        print data_train[10080]
+        print max(data_train[10080])
+        print min(data_train[10080])
+        #sys.exit(-1)
+    #"""
+    if i == 10079:
+        print data_train[i][:]
+
+        size_mx = mx
+        size_mn = mn
+        size_m = m
+        print size_mx, size_mn, size_m
+
+        #"""
+        for index in range(0, len(data_train[i])):
+            filesize = []
+            for j in range(1, 721):
+                if float(data_train[j*14-1][index])!= 0.0:
+                    #temp = float(data_train[j*14-1][index])
+                    filesize.append(float(data_train[j*14-1][index]))
+            print filesize
+
+            temp = 0
+            for j in range(720, 0, -1):
+                #print float(data_train[j*14-1][index])
+                if float(data_train[j*14-1][index])!= 0.0:
+                    temp = float(data_train[j*14-1][index])
+                    #filesize.append(float(data_train[j*14-1][index]))
+                else:
+                    #print "changed"
+                    if temp!=0.0:
+                        data_train[j*14-1][index] = float(temp)
+                        if index<len(hot_data_validation[j*14-1]):
+                            hot_data_validation[j*14-1][index] = float(temp)
+                        if index>=len(data_train[j*14-1])-len(cold_data_validation[j*14-1]):
+                            cold_data_validation[j*14-1][index-(len(data_train[j*14-1])-len(cold_data_validation[j*14-1]))] = float(temp)
+                        #if index % m_interval ==2 and index/m_interval<len(hot_data_validation[1000]):
+                        #    hot_data_validation[j*14-1][index/m_interval] = float(temp)
+                        #    cold_data_validation[j*14-1][index/m_interval] = float(temp)
+                    else:
+                        data_train[j*14-1][index] = float(np.mean(filesize))
+                        if index<len(hot_data_validation[j*14-1]):
+                            hot_data_validation[j*14-1][index] = float(np.mean(filesize))
+                        if index>=len(data_train[j*14-1])-len(cold_data_validation[j*14-1]):
+                            cold_data_validation[j*14-1][index-(len(data_train[j*14-1])-len(cold_data_validation[j*14-1]))] = float(np.mean(filesize))
+                        #if index % m_interval ==2 and index/m_interval<len(hot_data_validation[1000]):
+                        #    hot_data_validation[j*14-1][index/m_interval] = float(np.mean(filesize))
+                        #    cold_data_validation[j*14-1][index/m_interval] = float(np.mean(filesize))
+                #print data_train[j*14-1][index]
+            #print np.mean(filesize)
+            #sys.exit(-1)
+                    
+        #"""
+        #print data_train[i][:]
+        #sys.exit(-1)
+        m = np.mean(data_train[i])
+        mx = max(data_train[i])
+        mn = min(data_train[i])
+        #mn = 0.0
+
+        size_mx = mx
+        size_mn = mn
+        size_m = m
+        #print size_mx, size_mn, size_m
+        #sys.exit(-1)
+
+    m = np.mean(data_train[i])
+    mx = max(data_train[i])
+    mn = min(data_train[i])
+
+    if i == 10080:
+        y_mx = mx
+        y_mn = mn
+        y_m = m
+        print "real:",mx, mn, m
+        #print data_train[i][:]
+        #sys.exit(-1)
+    if i == 10082:
+        #print hot_data_validation[i]
+        avg_y_mx = mx
+        avg_y_mn = mn
+        avg_y_m = m
+        print "avg:",mx, mn, m
+        #sys.exit(-1)
+
+    if 1==1:
+        if i>10079:
+            print "tiao guo.."
+            continue
+        for j in range(0, len(data_train[i])):
+    	#for j in range(0, 10080):
+            v = data_train[i][j]
+            #print type(v)
+            if mx==mn:
+                #print "error!"
+                #print data_train[i]
+                #sys.exit(-1)
+                data_train[i][j] = 1.0
+            else:
+                data_train[i][j] = (float(v)-m)/(mx-mn)
+        for j in range(0, len(hot_data_validation[i])):
+            #print i
+            v = hot_data_validation[i][j]
+            if mx==mn:
+                hot_data_validation[i][j] = 1.0
+            else:
+                hot_data_validation[i][j] = (float(v)-m)/(mx-mn)
+
+        for j in range(0, len(cold_data_validation[i])):
+            v = cold_data_validation[i][j]
+            if mx==mn:
+                cold_data_validation[i][j] = 1.0
+            else:
+                cold_data_validation[i][j] = (float(v)-m)/(mx-mn)
+        #print data_train[i]
+    print i
+print y_mx, y_mn
+print avg_y_mx, avg_y_mn, avg_y_m
+#sys.exit(-1)
+data_train = zip(*data_train)
+#print data_train[0]
+#sys.exit(-1)
+#data_train = *FilenameFeature.values()
+#del data_train_list
+hot_data_validation = zip(*hot_data_validation)
+print len(hot_data_validation)
+print len(hot_data_validation[0])
+#
+batch_hot_x = np.array(hot_data_validation)
+batch_hot_y = np.array(hot_data_validation)[:,-5:-4]
+
+cold_data_validation = zip(*cold_data_validation)
+print len(cold_data_validation)
+print len(cold_data_validation[0])
+#
+batch_cold_x = np.array(cold_data_validation)
+batch_cold_y = np.array(cold_data_validation)[:,-5:-4]
+
+
+#sub_matrix_batch = resample(, replace=_replace, n_samples=batch_size/len(self.sparse_matrix_list), random_state=1)
+#sys.exit(-1)
+print "data_train_shape:", len(data_train), len(data_train[0])
+"""
+try:
+    if validation_percent>0.0 and validation_percent<1.0:
+        ds.add_sparse_matrix(sparse.csr_matrix(data_train)[:-1*validation_size,:])
+        ds_validation.add_sparse_matrix(sparse.csr_matrix(data_train)[-1*validation_size:,:])
+    if validation_percent==0.0:
+        ds.add_sparse_matrix(sparse.csr_matrix(data_train)[:,:])
+    if validation_percent==1.0:
+        ds_validation.add_sparse_matrix(sparse.csr_matrix(data_train)[:,:])
+except Exception as e:
+    print e
+"""  
+
+
+
+
+
+
+"""
+TrainData = pd.concat(TrainDataList, axis=0)
+
+TrainFeature = TrainData.values[:,0:4320]
+TrainLabel = TrainData.values[:,4321:-2]
+
+print 'After Bootstrapping TrainFeature.shape:', TrainFeature.shape, 'TrainLable.shape:', TrainLabel.shape
+TrainDataset = DataSet(features=TrainFeature, labels=TrainLabel)
+
+#TestFeatureList, TestLabelList = [], []
+TestDatasetList = []
+for dataframe in TrainDataList:
+    #TestFeatureList.append(dataframe.values[:,0:4320])
+    #TestLabelList.append(dataframe.values[:,4321:-2])
+    TestDatasetList.append(DataSet(features=dataframe.values[:,0:4320], labels=dataframe.values[:,4321:-2]))
+"""
+
+"""
+zip_csv_list = build_zip_csv_list('/scratchfs/cc/chengzj/csv01/LSTM_TRAIN_DATASET_class01.csv.zip.',0,6,
+                                  '/scratchfs/cc/chengzj/csv01/LSTM_TRAIN_DATASET_class02.csv.zip.',0,1,
+                                  '/scratchfs/cc/chengzj/csv01/LSTM_TRAIN_DATASET_class03.csv.zip.',0,113)
+print zip_csv_list
+TestDataList = []
+Sum_Len = 0
+Max_Index = -1
+for i in zip_csv_list:
+    _dataframe = read_zip_csv(zip_csv_list=i)
+    print 'TestFeatureSub.shape:', _dataframe.values.shape
+    Sum_Len += _dataframe.values.shape[0]
+    #if _dataframe.values.shape[0]>Max_Len:
+        #Max_Len = _dataframe.values.shape[0]
+        #Max_Index = zip_csv_list.index(i)
+    TestDataList.append(_dataframe)
+
+
+TestFeatureList, TestLabelList = [], []
+for dataframe in TestDataList:
+    TestFeatureList.append(dataframe.values[:,:-3])
+    TestLabelList.append(dataframe.values[:,-3:])
+TestDatasetList = []
+for i in range(0, len(TestFeatureList)):
+    print 'TestDataSet sub', i, 'length', TestFeatureList[i].shape[0], TestLabelList[i].shape[0]
+    TestDatasetList.append(DataSet(features=TestFeatureList[i], labels=TestLabelList[i]))
+
+
+TestDataListCopy = TestDataList
+for i in range(0,len(TestDataListCopy)):
+    #if i == Max_Index:
+        #print i, 'no need'
+        #continue
+    TestDataListCopy[i] = resample(TestDataListCopy[i], replace=True, n_samples=Sum_Len/3, random_state=234)
+
+
+TestData = pd.concat(TestDataListCopy, axis=0)
+TestFeature = TestData.values[:,:-3]
+TestLabel = TestData.values[:,-3:]
+
+print 'After Bootstrapping TestFeature.shape:', TestFeature.shape, 'TestLable.shape:', TestLabel.shape
+TestDataset = DataSet(features=TestFeature, labels=TestLabel)
+"""
+
+
+
+
+# Hyper Parameters
+# learning_rate = 0.001   #学习率
+global_step = tf.Variable(0, trainable=False)
+starter_learning_rate = 0.0001       #250
+#starter_learning_rate = 0.001       #250
+learning_rate = starter_learning_rate
+train_batch_size = 256
+test_batch_size = 1000
+
+n_steps = 24*30            #LSTM 展开步数
+n_inputs = 14           #输入节点数
+n_hiddens =  64          #隐层节点数
+n_layers = 4          #LSTM layer层数
+n_classes = class_num         #输出节点数
+n_classes = 1
+
+"""
+with tf.name_scope('learning_rate'):
+    learning_rate = tf.train.exponential_decay(starter_learning_rate,global_step,decay_steps=TrainFeature.shape[0]/train_batch_size,
+                                                decay_rate=0.8,staircase=True)
+    learning_rate_scalar = tf.summary.scalar('learning_rate',learning_rate)
+"""
+
+
+# tensor placeholder
+with tf.name_scope('inputs'):
+    x = tf.placeholder(tf.float32, [None, n_steps * n_inputs], name='x_input')
+    y = tf.placeholder(tf.float32, [None, n_classes], name='y_input')
+    keep_prob = tf.placeholder(tf.float32, name='keep_prob_input')           # 保持多少不被dropout
+    batch_size = tf.placeholder(tf.int32, [], name='batch_size_input')        # 批大小
+
+
+# weights and bias
+with tf.name_scope('weights'):
+    weights = tf.Variable(tf.truncated_normal([n_hiddens, n_classes],stddev=0.1), dtype=tf.float32, name='W')
+    tf.summary.histogram('output_layer_weights', weights)
+with tf.name_scope('bias'):
+    biases = tf.Variable(tf.random_normal([n_classes]), name='b')
+    tf.summary.histogram('output_layer_bias', biases)
+
+
+# RNN structure
+def RNN_LSTM(x, weights, biases):
+    #  RNN 输入 reshape
+    x = tf.reshape(x, [-1, n_steps, n_inputs])
+    #  定义 LSTM cell
+    #  cell 中的 dropout
+    def attn_cell():
+        lstm_cell = tf.contrib.rnn.BasicLSTMCell(n_hiddens)
+        with tf.name_scope('lstm_dropout'):
+            return tf.contrib.rnn.DropoutWrapper(lstm_cell, output_keep_prob=keep_prob)
+
+    # 实现多层 LSTM
+    enc_cells = []
+    for i in range(0, n_layers):
+        enc_cells.append(attn_cell())
+    with tf.name_scope('lstm_cells_layers'):
+        mlstm_cell = tf.contrib.rnn.MultiRNNCell(enc_cells, state_is_tuple=True)
+
+    # 全零初始化 state
+    _init_state = mlstm_cell.zero_state(batch_size=batch_size, dtype=tf.float32)
+    # dynamic_rnn  运行网络
+    outputs, states = tf.nn.dynamic_rnn(mlstm_cell, x, initial_state=_init_state, dtype=tf.float32, time_major=False)
+    # 输出
+    #return tf.nn.softmax(tf.matmul(outputs[:,-1,:], weights)+biases)
+    return tf.matmul(outputs[:,-1,:], weights)+biases
+
+with tf.name_scope('output_layer'):
+    pred = RNN_LSTM(x,weights,biases)
+    tf.summary.histogram('outputs', pred)
+# cost
+with tf.name_scope('loss'), tf.Session() as LossSess:
+
+    #cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=pred, labels=y))
+    cost = tf.reduce_mean(tf.square(tf.reshape(pred, [-1])-tf.reshape(y, [-1])))
+    #cost = tf.square(tf.reshape(pred, [-1])-tf.reshape(y, [-1]))
+    #cost = tf.reduce_mean(tf.square(tf.divide(tf.reshape(pred, [-1]), tf.reshape(y, [-1]))))
+    #cost = tf.reduce_mean(tf.abs(tf.subtract(y, pred)))
+    #cost = tf.reduce_mean(-tf.reduce_sum(y * tf.log(pred),reduction_indices=[1]))
+    """
+    predArray = LossSess.run(pred)
+    labelArray = LossSess.run(y)
+    _predArray = np.empty(shape=[0, 4])
+    _lableArray = np.empty(shape=[0, 4])
+    for i in range(0,labelArray.shape[0]):
+        if labelArray[0] == np.array([1,0,0,0],dtype=float):
+            for j in range(0, LossWeight[0]):
+                np.concatenate((_predArray, predArray[i]),axis=0)
+                np.concatenate((_lableArray, labelArray[i]),axis=0)
+        if labelArray[0] == np.array([0,1,0,0],dtype=float):
+            for j in range(0, LossWeight[1]):
+                np.concatenate((_predArray, predArray[i]),axis=0)
+                np.concatenate((_lableArray, labelArray[i]),axis=0)
+        if labelArray[0] == np.array([0,0,1,0],dtype=float):
+            for j in range(0, LossWeight[2]):
+                np.concatenate((_predArray, predArray[i]),axis=0)
+                np.concatenate((_lableArray, labelArray[i]),axis=0)
+        if labelArray[0] == np.array([0,0,0,1],dtype=float):
+            for j in range(0, LossWeight[3]):
+                np.concatenate((_predArray, predArray[i]),axis=0)
+                np.concatenate((_lableArray, labelArray[i]),axis=0)
+    _pred = tf.convert_to_tensor(_predArray,dtype=float)
+    _label = tf.convert_to_tensor(_lableArray,dtype=float)
+
+    cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=_pred, labels=_label))
+    """
+    loss_scalar = tf.summary.scalar('loss', cost)
+# optimizer
+with tf.name_scope('train'):
+    train_op = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost)
+
+# correct_pred = tf.equal(tf.arg_max(pred, 1), tf.arg_max(y, 1))
+# accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
+"""
+with tf.name_scope('accuracy'):
+    print 'labels', tf.arg_max(y, 1), 'predictions', tf.arg_max(pred, 1)
+    accuracy = tf.metrics.accuracy(labels=tf.arg_max(y, 1), predictions=tf.arg_max(pred,1))[1]
+    accuracy_scalar = tf.summary.scalar('accuracy', accuracy)
+    #correct_prediction = tf.equal(tf.arg_max(pred,1),tf.argmax(y,1))
+    #accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
+with tf.name_scope('accuracy_class0'):
+    accuracy_class0 = tf.metrics.accuracy(labels=tf.arg_max(y, 1), predictions=tf.arg_max(pred, 1))[1]
+    accuracy_class0_scalar = tf.summary.scalar('accuracy_class0', accuracy_class0)
+with tf.name_scope('accuracy_class1'):
+    accuracy_class1 = tf.metrics.accuracy(labels=tf.arg_max(y, 1), predictions=tf.arg_max(pred, 1))[1]
+    accuracy_class1_scalar = tf.summary.scalar('accuracy_class1', accuracy_class1)
+with tf.name_scope('accuracy_class2'):
+    accuracy_class2 = tf.metrics.accuracy(labels=tf.arg_max(y, 1), predictions=tf.arg_max(pred, 1))[1]
+    accuracy_class2_scalar = tf.summary.scalar('accuracy_class2', accuracy_class2)
+with tf.name_scope('accuracy_class3'):
+    accuracy_class3 = tf.metrics.accuracy(labels=tf.arg_max(y, 1), predictions=tf.arg_max(pred, 1))[1]
+    accuracy_class3_scalar = tf.summary.scalar('accuracy_class3', accuracy_class3)
+"""
+
+with tf.name_scope('accuracy'):
+    accuracy = tf.reduce_mean(tf.abs(tf.subtract(y, pred)))
+    accuracy_scalar = tf.summary.scalar('accuracy', accuracy)
+
+with tf.name_scope('accuracy_class0'):
+    accuracy_class0 = tf.reduce_mean(tf.abs(tf.subtract(y, pred)))
+    accuracy_class0_scalar = tf.summary.scalar('accuracy_class0', accuracy_class0)
+
+with tf.name_scope('accuracy_class1'):
+    accuracy_class1 = tf.reduce_mean(tf.abs(tf.subtract(y, pred)))
+    accuracy_class1_scalar = tf.summary.scalar('accuracy_class1', accuracy_class1)
+
+with tf.name_scope('accuracy_class2'):
+    accuracy_class2 = tf.reduce_mean(tf.abs(tf.subtract(y, pred)))
+    accuracy_class2_scalar = tf.summary.scalar('accuracy_class2', accuracy_class2)
+
+with tf.name_scope('accuracy_class3'):
+    accuracy_class3 = tf.reduce_mean(tf.abs(tf.subtract(y, pred)))
+    accuracy_class3_scalar = tf.summary.scalar('accuracy_class3', accuracy_class3)
+
+saver = tf.train.Saver()
+
+with tf.Session() as sess:
+    #merged = tf.summary.merge_all()
+    #features = np.empty(shape=[0, 1176])
+    #labels = np.empty(shape=[0, 3])
+
+    train_writer = tf.summary.FileWriter("./logs/train", sess.graph)
+    test_writer = tf.summary.FileWriter("./logs/test", sess.graph)
+
+    sess.run(tf.global_variables_initializer())
+    sess.run(tf.local_variables_initializer())
+
+    print "before restore model params",sess.run(weights),sess.run(biases)
+
+    """
+    # restore LSTM patameters
+    try:
+        #check_point_path = '14-day_Model/'
+        saver.restore(sess, '14-day_Model/LSTM')
+        #saver.restore(sess, 'ServingModel/00000001/export')
+        #saver.restore(sess, 'GoodModel/LSTM')
+    except Exception as e:
+        print e
+
+    print "after restore model params params",sess.run(weights),sess.run(biases)
+    """
+
+    # training
+    i = -1
+    last_train_accuracy = 0
+    train_accuracy = 0
+    #batch_x, batch_y = None, None
+    #batch_x, batch_y = TrainDataset.next_batch(batch_size=train_batch_size, shuffle=True)
+
+    default_test_accuracy = 0
+    while True:
+        i += 1
+        test_accuracy = 0
+        test_y = []
+        test_yp = []
+        test_yp_scores = []
+        
+        batch_x_list, batch_y_list = [], []
+        """
+        for TrainDataset in TrainDatasetList:
+            batch_x_sub, batch_y_sub = TrainDataset.random_sample_batch(train_batch_size/len(TrainDatasetList))
+            batch_x_list.append(batch_x_sub)
+            batch_y_list.append(batch_y_sub)
+        batch_x = np.vstack(batch_x_list)
+        batch_y = np.vstack(batch_y_list)
+        """
+        batch_x, batch_y, flag, read_time, write_time = ds.random_sample_batch_mix(train_batch_size)
+        if flag==-1:
+            continue
+        print "batch_x:", batch_x.shape
+        print "batch_y:", batch_y.shape
+        #batch_y = np.divide(batch_y,batch_x[:,-3])
+        for j in range(0, batch_y.shape[0]):
+            if batch_x[j, -3]>0:
+                batch_y[j] = batch_y[j]/batch_x[j, -3]
+            else:
+                batch_y[j] = 100
+            if batch_y[j]>100:
+                batch_y[j]=100
+        #sys.exit(-1)
+
+        #batch_x = scale(batch_x)
+        _, loss_, _pred = sess.run([train_op, cost, pred],
+                            feed_dict={x: batch_x[:,0:10080], y: batch_y, keep_prob: 0.50, batch_size: batch_x.shape[0]})
+        #train_writer.add_summary(loss_, i)
+
+        #batch_x, batch_y = TrainDataset.next_batch(batch_size=train_batch_size, shuffle=True)
+        print 'iter:', i, '_epochs_completed:',ds._epochs_completed
+        print "loss:", loss_
+        print "train result:", batch_x[0, 10080], batch_y[0], _pred[0]
+        """
+        for TrainDataset in TrainDatasetList:
+            print TrainDataset._epochs_completed,
+        print '\n',
+        """
+
+        if i % 100==0:
+            train_accuracy_metall = sess.run(accuracy_scalar, feed_dict={x: batch_x[:,0:10080], y: batch_y, keep_prob: 1.0,
+                                                             batch_size: batch_x.shape[0]})
+            train_accuracy,_y,_pred = sess.run([accuracy,y,pred], feed_dict={x: batch_x[:,0:10080], y: batch_y, keep_prob: 1.0,
+                                                             batch_size: batch_x.shape[0]})
+            print "Output and pred distance(use last batch):", train_accuracy
+            """
+            for j in range(0, min(batch_x.shape[0],300)):
+                Index = batch_x[j][-1]
+                filename = "None"
+                try:
+                    filename = FilenameDict[str(int(Index))]
+                except:
+                    print "Index ", str(int(Index)) , " not in FilenameDict!"
+                print "Filename:", filename, "Train dataset Read Time:",_y[j],"predictions:",_pred[j]
+            """
+            train_writer.add_summary(train_accuracy_metall, i)
+
+
+
+        if i % 100==0:
+            """
+            batch_x_list, batch_y_list = [], []
+            for ValidationDataset in ValidationDatasetList:
+                batch_x_sub, batch_y_sub = ValidationDataset.random_sample_batch(test_batch_size/len(ValidationDatasetList))
+                batch_x_list.append(batch_x_sub)
+                batch_y_list.append(batch_y_sub)
+            batch_x = np.vstack(batch_x_list)
+            batch_y = np.vstack(batch_y_list)
+            """
+            #batch_x, batch_y, flag, read_time, write_time = ds_validation.random_sample_batch_mix(test_batch_size)
+            if flag==-1:
+                continue
+            for j in range(0, batch_hot_y.shape[0]):
+                if batch_hot_x[j, -3]>0:
+                    batch_hot_y[j] = batch_hot_y[j]/batch_hot_x[j, -3]
+                else:
+                    batch_hot_y[j] = 100
+                if batch_hot_y[j]>100:
+                    batch_hot_y[j]=100
+
+            #new_batch_hot_x = scale(batch_hot_x)
+            new_batch_hot_x = batch_hot_x
+            test_accuracy_metall = sess.run(accuracy_scalar, feed_dict={x: new_batch_hot_x[:,0:10080], y:batch_hot_y, keep_prob:1.0, batch_size:new_batch_hot_x.shape[0]})
+            test_accuracy,_y,_pred = sess.run([accuracy,y,pred], feed_dict={x: new_batch_hot_x[:,0:10080], y:batch_hot_y, keep_prob:1.0, batch_size:new_batch_hot_x.shape[0]})
+            test_writer.add_summary(test_accuracy_metall, i)
+            print "Test Accuracy:", test_accuracy
+            #print _pred
+            for j in range(0, min(batch_hot_x.shape[0],300)):
+                Index = batch_hot_x[j][-1]
+                filename = "None"
+                try:
+                    filename = FilenameDict[str(int(Index))]
+                except:
+                    print "Index ", Index , " not in FilenameDict!"
+                #print "Filename:", filename, "Validation dataset Read Time:",_y[j]*(y_mx-y_mn)+y_m,"History AVG Read Time:",batch_hot_x[j][-3]*(avg_y_mx-avg_y_mn)+avg_y_m,"predictions:",_pred[j]*(y_mx-y_mn)+y_m
+                #print batch_hot_x[j][-5], batch_hot_x[j][-3], batch_hot_x[j][-1]
+                #print y_mx, y_mn, y_m
+                #print avg_y_mx, avg_y_mn, avg_y_m
+                #print size_mx, size_mn, size_m
+                print _y[j], _pred[j]
+                #sys.exit(-1)
+                #print "Filename:", filename, "Validation dataset Read Time:",(_y[j]*(y_mx-y_mn)+y_m)*(batch_hot_x[j][-3]*(avg_y_mx-avg_y_mn)+avg_y_m),"History AVG Read Time:",batch_hot_x[j][-3]*(avg_y_mx-avg_y_mn)+avg_y_m,"predictions:",(_pred[j]*(y_mx-y_mn)+y_m)*(batch_hot_x[j][-3]*(avg_y_mx-avg_y_mn)+avg_y_m), "Filesize:", float(batch_hot_x[j][10079])*(size_mx-size_mn)+size_m
+                print "Filename:", filename, "Validation dataset Read Time:",_y[j]*batch_hot_x[j][-3],"History AVG Read Time:",batch_hot_x[j][-3],"predictions:",_pred[j]*batch_hot_x[j][-3], "Filesize:", float(batch_hot_x[j][10079])*(size_mx-size_mn)+size_m
+                #labels = np.argmax(_y[j],0)
+                #predictions = np.argmax(_pred[j],0)
+                #print "labels:",np.argmax(_y[j],0),"predictions:",np.argmax(_pred[j],0)
+                #if labels!=predictions:
+                    #print batch_x[j]
+
+            """
+            test_accuracy_metall = sess.run(accuracy_scalar, feed_dict={x: batch_cold_x[:,0:10080], y:batch_cold_y, keep_prob:1.0, batch_size:batch_cold_x.shape[0]})
+            test_accuracy,_y,_pred = sess.run([accuracy,y,pred], feed_dict={x: batch_cold_x[:,0:10080], y:batch_cold_y, keep_prob:1.0, batch_size:batch_cold_x.shape[0]})
+            test_writer.add_summary(test_accuracy_metall, i)
+            print "Test Accuracy:", test_accuracy
+            for j in range(0, min(batch_cold_x.shape[0],300)):
+                Index = batch_cold_x[j][-1]
+                filename = "None"
+                try:
+                    filename = FilenameDict[str(int(Index))]
+                except:
+                    print "Index ", Index , " not in FilenameDict!"
+                #print "Filename:", filename, "Validation dataset Read Time:",_y[j]*(y_mx-y_mn)+y_m,"History AVG Read Time:",batch_cold_x[j][-3]*(avg_y_mx-avg_y_mn)+avg_y_m,"predictions:",_pred[j]*(y_mx-y_mn)+y_m, "Filesize:", batch_cold_x[j][10079], batch_cold_x[j][10079]*(size_mx-size_mn)+size_m
+                print "Filename:", filename, "Validation dataset Read Time:",_y[j]*batch_cold_x[j][-3],"History AVG Read Time:",batch_cold_x[j][-3],"predictions:",_pred[j]*batch_cold_x[j][-3], "Filesize:",  batch_cold_x[j][10079]*(size_mx-size_mn)+size_m
+            """
+
+            #for item in range(0, len(ValidationDatasetList)):
+            for item in range(0, class_num):
+                """
+                _test_batch_x, _test_batch_y = ValidationDatasetList[item].random_sample_batch(batch_size=test_batch_size
+                                                                                )
+                """
+                _test_batch_x, _test_batch_y, flag, read_time, write_time = ds_validation.random_sample_batch_separate(test_batch_size, item)
+                if flag==-1:
+                    continue
+                if _test_batch_x.any()==None or _test_batch_y.any()==None:
+                    continue
+                _test_accuracy = 0
+                if item == 0:
+                    _test0_accuracy_metall = sess.run(accuracy_class0_scalar,
+                            feed_dict={x: _test_batch_x[:,0:10080], y: _test_batch_y, keep_prob: 1.0,
+                                                                 batch_size: _test_batch_x.shape[0]})
+                    print 'class 0 accuracy:', sess.run(accuracy_class0,
+                            feed_dict={x: _test_batch_x[:,0:10080], y: _test_batch_y, keep_prob: 1.0,
+                                                                   batch_size: _test_batch_x.shape[0]})
+                    test_writer.add_summary(_test0_accuracy_metall, i)
+                    # print "Testing class", item, "Accuracy:", sess.run(accuracy_class0)
+                if item == 1:
+                    _test1_accuracy_metall = sess.run(accuracy_class1_scalar,
+                                                      feed_dict={x: _test_batch_x[:,:10080], y: _test_batch_y, keep_prob: 1.0,
+                                                                 batch_size: _test_batch_x.shape[0]})
+                    print 'class 1 accuracy:', sess.run(accuracy_class1,
+                                                        feed_dict={x: _test_batch_x[:,:10080], y: _test_batch_y, keep_prob: 1.0,
+                                                                   batch_size: _test_batch_x.shape[0]})
+                    test_writer.add_summary(_test1_accuracy_metall, i)
+                    # print "Testing class", item, "Accuracy:", sess.run(accuracy_class1)
+                if item == 2:
+                    _test2_accuracy_metall = sess.run(accuracy_class2_scalar,
+                            feed_dict={x: _test_batch_x[:,:10080], y: _test_batch_y, keep_prob: 1.0,
+                                                                 batch_size: _test_batch_x.shape[0]})
+                    print 'class 2 accuracy:', sess.run(accuracy_class2,
+                            feed_dict={x: _test_batch_x[:,:10080], y: _test_batch_y, keep_prob: 1.0,
+                                                                   batch_size: _test_batch_x.shape[0]})
+                    test_writer.add_summary(_test2_accuracy_metall, i)
+                    # print "Testing class", item, "Accuracy:", sess.run(accuracy_class2)
+                if item == 3:
+                    _test3_accuracy_metall = sess.run(accuracy_class3_scalar,
+                            feed_dict={x: _test_batch_x[:,:10080], y: _test_batch_y, keep_prob: 1.0,
+                                                                 batch_size: _test_batch_x.shape[0]})
+                    print 'class 3 accuracy:', sess.run(accuracy_class3,
+                            feed_dict={x: _test_batch_x[:,:10080], y: _test_batch_y, keep_prob: 1.0,
+                                                                   batch_size: _test_batch_x.shape[0]})
+                    test_writer.add_summary(_test3_accuracy_metall, i)
+                    # print "Testing class", item, "Accuracy:", sess.run(accuracy_class3)
+
+
+        '''
+        if (i+1) % 100==0:
+            print train_accuracy, last_train_accuracy
+            if train_accuracy<=last_train_accuracy:
+                """
+                if learning_rate*0.8>0.0001:
+                    learning_rate = learning_rate*0.8
+                else:
+                    learning_rate = starter_learning_rate
+                """
+                learning_rate = 0.0005+0.0001-learning_rate
+            last_train_accuracy = train_accuracy
+            print 'learning_rate:', learning_rate
+        '''
+        if (i+1) % 100==0:
+           saver.save(sess, 'RegressionModel/LSTM.ckpt')
+
+
+    print "Optimization Finished!"
+
+    # prediction
+    # print "Testing Accuracy:", sess.run(accuracy, feed_dict={x:test_x, y:test_y, keep_prob:1.0, batch_size:test_x.shape[0]})
+
