@@ -1,3 +1,4 @@
+#!/bin/env python
 import tensorflow as tf
 
 with tf.name_scope('graph') as scope:

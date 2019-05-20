@@ -1,3 +1,5 @@
+#!/bin/env python
+
 import happybase
 
 def main():

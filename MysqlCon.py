@@ -1,4 +1,6 @@
+#!/bin/env python
 # -*-coding:UTF-8-*-
+
 import sys,os
 import traceback
 import mysql.connector

@@ -1,4 +1,6 @@
+#!/bin/env python
 # -*-coding:UTF-8-*-
+
 import sys, os
 import tensorflow as tf
 from tensorflow.python.framework import dtypes
